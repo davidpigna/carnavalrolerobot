@@ -235,7 +235,7 @@ async def register_game(ctx: commands.Context):
     "nombre": nombre.content,
     "descripcion": descripcion.content,
     "sistema": sistema.content,
-    "master": str(ctx.message.author),
+    "master": ctx.message.author.mention,
     "fecha_hora": timestamp,
     "cantidadjugadores": cantidadjugadores_num,
     "lugares": cantidadjugadores_num,
@@ -257,6 +257,10 @@ async def editar_partida(ctx: commands.Context, message_id: int):
         if not partida:
             await ctx.send("No se encontró ninguna partida con el messageid proporcionado.")
             return
+
+        # Guardar los datos de Titulares y Suplentes antes de editar la partida
+        titulares = partida.get('titulares', [])
+        suplentes = partida.get('suplentes', [])
 
         # Solicitar qué campo desea editar
         await ctx.send("¿Qué campo deseas editar?\n1. Nombre\n2. Descripción\n3. Sistema\n4. Fecha y hora\n5. Cantidad de jugadores\n6. Imagen\nPor favor, responde con el número correspondiente.")
@@ -332,18 +336,22 @@ async def editar_partida(ctx: commands.Context, message_id: int):
         
         # Actualizar la información de la partida en la base de datos
         campos_actualizados = {}
-        if nuevo_valor:
+        if nuevo_valor is not None:
             campos_actualizados["nombre"] = nuevo_valor
-        if nueva_descripcion:
+        if nueva_descripcion is not None:
             campos_actualizados["descripcion"] = nueva_descripcion
-        if nuevo_sistema:
+        if nuevo_sistema is not None:
             campos_actualizados["sistema"] = nuevo_sistema
-        if nueva_fecha_hora:
+        if nueva_fecha_hora is not None:
             campos_actualizados["fecha_hora"] = nueva_fecha_hora
-        if nueva_cantidad_jugadores:
+        if nueva_cantidad_jugadores is not None:
             campos_actualizados["cantidadjugadores"] = nueva_cantidad_jugadores
-        if nueva_imagen:
+        if nueva_imagen is not None:
             campos_actualizados["imagen"] = nueva_imagen
+
+        # Vuelve a incluir los datos de Titulares y Suplentes en la actualización
+        campos_actualizados["titulares"] = titulares
+        campos_actualizados["suplentes"] = suplentes
 
         db.partidas.update_one({"messageid": message_id}, {
             "$set": campos_actualizados
@@ -354,15 +362,24 @@ async def editar_partida(ctx: commands.Context, message_id: int):
         mensaje_partida = await aprobaciones_channel.fetch_message(message_id)
 
         # Construir el nuevo contenido del mensaje
-        nuevo_contenido = f"{campos_actualizados.get('nombre', partida['nombre'])}\n--------------------------\n{campos_actualizados.get('descripcion', partida['descripcion'])}\n--------------------------\n🎲Sistema: {campos_actualizados.get('sistema', partida['sistema'])}\n🧙Directorx de Juego: {partida['master']}\n🗓️Fecha y hora: <t:{campos_actualizados.get('fecha_hora', partida['fecha_hora'])}:F>\n🙋Cantidad de Jugadorxs: {campos_actualizados.get('cantidadjugadores', partida['cantidadjugadores'])}\n--------------------------\nLugares disponibles: {campos_actualizados.get('cantidadjugadores', partida['cantidadjugadores'])}\n--------------------------\n¿Cómo me anoto?\nReacciona a esta publicación con 💪 para anotarte como titular y con 🔁 para anotarte como suplente.\n--------------------------\n{campos_actualizados.get('imagen', partida['imagen'])}"
+        nuevo_contenido = f"{campos_actualizados.get('nombre', partida['nombre'])}\n--------------------------\n{campos_actualizados.get('descripcion', partida['descripcion'])}\n--------------------------\n🎲Sistema: {campos_actualizados.get('sistema', partida['sistema'])}\n🧙Directorx de Juego: {partida['master']}\n🗓️Fecha y hora: <t:{campos_actualizados.get('fecha_hora', partida['fecha_hora'])}:F>\n🙋Cantidad de Jugadorxs: {campos_actualizados.get('cantidadjugadores', partida['cantidadjugadores'])}\n--------------------------\nLugares disponibles: {campos_actualizados.get('cantidadjugadores', partida['cantidadjugadores'])}\n--------------------------\n¿Cómo me anoto?\nReacciona a esta publicación con 💪 para anotarte como titular y con 🔁 para anotarte como suplente."
+        
+        # Agregar la imagen al contenido si está disponible
+        if campos_actualizados.get('imagen'):
+            nuevo_contenido += f"\n--------------------------\n{campos_actualizados['imagen']}"
 
-        # Editar el mensaje con la nueva información
+        # Agregar los datos de Titulares y Suplentes nuevamente al mensaje
+        nuevo_contenido += f"\nTitulares 💪: {' | '.join(titulares)}" if titulares else ""
+        nuevo_contenido += f"\nSuplentes 🔁: {' | '.join(suplentes)}" if suplentes else ""
+
+        # Editar el mensaje con el nuevo contenido
         await mensaje_partida.edit(content=nuevo_contenido)
 
         await ctx.send("Campos de la partida editados correctamente.")
 
     except Exception as e:
         await ctx.send(f"Se produjo un error: {str(e)}")
+
 
 async def register_talk(ctx: commands.Context):
     try:
@@ -481,12 +498,21 @@ async def remove_player(message, player, role):
             players = role_line.split(": ")[1]
         except IndexError:
             players = ""
- # Obtiene los jugadores actuales
+        # Obtiene los jugadores actuales
         if player.mention in players:
-            players = players.replace(f", {player.mention}", "").replace(f"{player.mention}", "")
+            players_list = [p.strip() for p in players.split(",")]  # Divide los jugadores actuales
+            players_list.remove(player.mention)  # Elimina al jugador
+            players = ", ".join(players_list)  # Reconstruye la lista de jugadores
             lines[lines.index(role_line)] = f"{role}: {players}" # Reemplaza la línea en la lista de líneas
+            # Actualiza las listas de jugadores en la base de datos
+            if role == "Titulares 💪":
+                db.partidas.update_one({"messageid": message.id}, {"$pull": {"titulares": player.mention}})
+            elif role == "Suplentes 🔁":
+                db.partidas.update_one({"messageid": message.id}, {"$pull": {"suplentes": player.mention}})
     content = "\n".join(lines) # Junta todas las líneas en un solo string
-    await message.edit(content=content)    
+    await message.edit(content=content)
+
+
 
 #############COMANDOS##############
 @bot.event
