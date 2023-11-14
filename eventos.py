@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import time
+from collections import defaultdict                               
 
 import discord
 import pymongo
@@ -20,6 +21,7 @@ last_reaction_time = {}
 current_timestamp = time.time()
 time_struct = time.gmtime(current_timestamp)
 year = time_struct.tm_year
+user_registration_status = defaultdict(bool)                                         
 
 async def talk_time(payload):
     user = bot.get_user(payload.user_id)
@@ -42,7 +44,94 @@ async def talk_time(payload):
             continue
     db.charlas.update_one({"messageid": payload.message_id}, {"$set": {"fecha_hora": timestamp}})
 
+async def editar_charla(ctx: commands.Context, message_id: int):
+    try:
+        # Buscar la charla en la base de datos utilizando el message_id
+        charla = db.charlas.find_one({"messageid": message_id})
+
+        if not charla:
+            await ctx.send("No se encontró ninguna charla con el messageid proporcionado.")
+            return
+
+        # Solicitar qué campo desea editar
+        await ctx.send("¿Qué campo deseas editar?\n1. Nombre\n2. Descripción\n3. Comunidad representante\n4. Imagen\n5. Fecha y hora\nPor favor, responde con el número correspondiente.")
+        campo_a_editar = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        if campo_a_editar.content == ".cancelarregistro":
+            return
+
+        # Verificar la respuesta del usuario y solicitar el nuevo valor
+        campo_a_editar = campo_a_editar.content.lower()
+        nuevo_valor = ""
+        nueva_descripcion = ""
+        nueva_comunidad = ""
+        nueva_imagen = ""
+        nueva_fecha_hora = charla['fecha_hora']  # Mantén el valor actual como predeterminado
+
+        if campo_a_editar == "1":
+            await ctx.send("Ingrese el nuevo nombre de la charla:")
+            nuevo_valor = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        elif campo_a_editar == "2":
+            await ctx.send("Ingrese la nueva descripción de la charla:")
+            nueva_descripcion = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        elif campo_a_editar == "3":
+            await ctx.send("Ingrese la nueva comunidad representante (Red Social de preferencia o Sitio web):")
+            nueva_comunidad = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        elif campo_a_editar == "4":
+            await ctx.send("Ingrese la nueva imagen de la charla (URL):")
+            nueva_imagen = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        elif campo_a_editar == "5":
+            await ctx.send("Por favor, ingrese la nueva fecha y hora de la charla (formato: DD-MM-AAAA HH:MM):")
+            fecha_hora_input = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+            fecha_hora_str = fecha_hora_input.content
+            try:
+                fecha_hora_datetime = datetime.datetime.strptime(fecha_hora_str, "%d-%m-%Y %H:%M")
+                # Pedir selección de zona horaria
+                await ctx.send("Ingrese la zona horaria de la charla (UTC-3, UTC-4, UTC-5, UTC-6):")
+                zona_horaria = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+                # Obtener la diferencia en horas de la zona horaria seleccionada
+                diferencia_horas = {"UTC-3": 3, "UTC-4": 4, "UTC-5": 5, "UTC-6": 6}.get(zona_horaria.content.upper(), 0)
+                # Sumar la diferencia horaria a la fecha y hora ingresada
+                fecha_hora_datetime += datetime.timedelta(hours=diferencia_horas)
+                timestamp = int(fecha_hora_datetime.timestamp())
+                nueva_fecha_hora = timestamp  # Asigna el nuevo valor de fecha y hora
+            except ValueError:
+                await ctx.send("Formato de fecha y hora incorrecto o zona horaria no válida. La edición se cancelará.")
+                return
+
+        # Actualizar la información de la charla en la base de datos
+        campos_actualizados = {}
+        if nuevo_valor:
+            campos_actualizados["nombre"] = nuevo_valor.content
+        if nueva_descripcion:
+            campos_actualizados["descripcion"] = nueva_descripcion.content
+        if nueva_comunidad:
+            campos_actualizados["comunidad"] = nueva_comunidad.content
+        if nueva_imagen:
+            campos_actualizados["imagen"] = nueva_imagen.content
+        if nueva_fecha_hora:
+            campos_actualizados["fecha_hora"] = nueva_fecha_hora
+
+        db.charlas.update_one({"messageid": message_id}, {
+            "$set": campos_actualizados
+        })
+
+        # Editar el mensaje de la charla en el canal de charlas-publicadas
+        charlas_publicadas_channel = ctx.bot.get_channel(1152635692975927359)
+        mensaje_charla = await charlas_publicadas_channel.fetch_message(message_id)
+
+        # Construir el nuevo contenido del mensaje
+        nuevo_contenido = f"{campos_actualizados.get('nombre', charla['nombre'])}\n--------------------------\n{campos_actualizados.get('descripcion', charla['descripcion'])}\n--------------------------\n🤝Comunidad: {campos_actualizados.get('comunidad', charla['comunidad'])}\n🗣️Ponente: {charla['ponente']}\n{campos_actualizados.get('imagen', charla['imagen'])}\nFecha y hora: <t:{campos_actualizados.get('fecha_hora', charla['fecha_hora'])}:F>"
+
+        # Editar el mensaje con la nueva información
+        await mensaje_charla.edit(content=nuevo_contenido)
+
+        await ctx.send("Campos de la charla editados correctamente.")
+
+    except Exception as e:
+        await ctx.send(f"Se produjo un error: {str(e)}")
+
 async def register_game(ctx: commands.Context):
+    user_id = ctx.author.id                       
     try:
         #Preguntar por el nombre de la partida
         while True:
@@ -113,8 +202,12 @@ async def register_game(ctx: commands.Context):
             if imagen.content != ".registrarpartida":
                 break
     except asyncio.TimeoutError:
-        await ctx.send("Tiempo agotado, cancelando registro.") 
-        return           
+        await ctx.send("Tiempo agotado, cancelando registro.")
+    except Exception as e:
+        await ctx.send(f"Se produjo un error: {e}") 
+    finally:
+        # Esto se ejecutará después de que el registro termine, incluso si fue por una excepción o cancelación.
+        user_registration_status[user_id] = False
     #Crear Mensaje de la partida
     partidam = {
     "nombre": nombre.content,
@@ -149,7 +242,7 @@ async def register_game(ctx: commands.Context):
     "nombre": nombre.content,
     "descripcion": descripcion.content,
     "sistema": sistema.content,
-    "master": str(ctx.message.author),
+    "master": ctx.message.author.mention,
     "fecha_hora": timestamp,
     "cantidadjugadores": cantidadjugadores_num,
     "lugares": cantidadjugadores_num,
@@ -161,9 +254,142 @@ async def register_game(ctx: commands.Context):
     #Insertar en la base de datos
     db.partidas.insert_one(partida)
     await ctx.send("¡Partida registrada correctamente! ✅, un moderador debe revisarla antes de publicarse en el canal de partidas-publicadas")
-    is_registering = False
+
+async def editar_partida(ctx: commands.Context, message_id: int):
+    try:
+        # Buscar la partida en la base de datos utilizando el message_id
+        partida = db.partidas.find_one({"messageid": message_id})
+
+        if not partida:
+            await ctx.send("No se encontró ninguna partida con el messageid proporcionado.")
+            return
+
+        # Guardar los datos de Titulares y Suplentes antes de editar la partida
+        titulares = partida.get('titulares', [])
+        suplentes = partida.get('suplentes', [])
+
+        # Solicitar qué campo desea editar
+        await ctx.send("¿Qué campo deseas editar?\n1. Nombre\n2. Descripción\n3. Sistema\n4. Fecha y hora\n5. Cantidad de jugadores\n6. Imagen\nPor favor, responde con el número correspondiente.")
+        campo_a_editar = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        if campo_a_editar.content == ".cancelarregistro":
+            await ctx.send("Edición de partida cancelada.")
+            return
+
+        # Verificar la respuesta del usuario y solicitar el nuevo valor
+        campo_a_editar = campo_a_editar.content.lower()
+        nuevo_valor = None
+        nueva_descripcion = None
+        nuevo_sistema = None
+        nueva_fecha_hora = partida['fecha_hora']  # Mantén el valor actual como predeterminado
+        nueva_cantidad_jugadores = partida['cantidadjugadores']
+        nueva_imagen = partida['imagen']
+
+        if campo_a_editar == "1":
+            await ctx.send("Ingrese el nuevo nombre de la partida:")
+            nuevo_valor_message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+            nuevo_valor = nuevo_valor_message.content
+        elif campo_a_editar == "2":
+            await ctx.send("Ingrese la nueva descripción de la partida:")
+            nueva_descripcion_message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+            nueva_descripcion = nueva_descripcion_message.content
+        elif campo_a_editar == "3":
+            await ctx.send("Ingrese el nuevo sistema de la partida:")
+            nuevo_sistema_message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+            nuevo_sistema = nuevo_sistema_message.content
+        elif campo_a_editar == "4":
+            await ctx.send("Por favor, ingrese la nueva fecha y hora de la partida (formato: DD-MM-AAAA HH:MM):")
+            fecha_hora_input_message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+            fecha_hora_input = fecha_hora_input_message.content
+            if fecha_hora_input == ".cancelarregistro":
+                await ctx.send("Edición de partida cancelada.")
+                return
+            try:
+                fecha_hora_datetime = datetime.datetime.strptime(fecha_hora_input, "%d-%m-%Y %H:%M")
+                # Pedir selección de zona horaria
+                await ctx.send("Ingrese la zona horaria de la partida (UTC-3, UTC-4, UTC-5, UTC-6):")
+                zona_horaria_message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+                zona_horaria = zona_horaria_message.content
+                if zona_horaria == ".cancelarregistro":
+                    await ctx.send("Edición de partida cancelada.")
+                    return
+                # Obtener la diferencia en horas de la zona horaria seleccionada
+                diferencia_horas = {"UTC-3": 3, "UTC-4": 4, "UTC-5": 5, "UTC-6": 6}.get(zona_horaria.upper(), 0)
+                # Sumar la diferencia horaria a la fecha y hora ingresada
+                fecha_hora_datetime += datetime.timedelta(hours=diferencia_horas)
+                timestamp = int(fecha_hora_datetime.timestamp())
+                nueva_fecha_hora = timestamp  # Asigna el nuevo valor de fecha y hora
+            except ValueError:
+                await ctx.send("Formato de fecha y hora incorrecto o zona horaria no válida. La edición se cancelará.")
+                return
+        elif campo_a_editar == "5":
+            await ctx.send("Ingrese la nueva cantidad de jugadores de la partida (entre 2 y 7):")
+            cantidad_jugadores_input_message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+            cantidad_jugadores_input = cantidad_jugadores_input_message.content
+            try:
+                nueva_cantidad_jugadores = int(cantidad_jugadores_input)
+                if 2 <= nueva_cantidad_jugadores <= 7:
+                    pass  # Valor válido
+                else:
+                    await ctx.send("Por favor ingrese un número entero entre 2 y 7.")
+                    return
+            except ValueError:
+                await ctx.send("Por favor ingrese un número entero.")
+                return
+        elif campo_a_editar == "6":
+            await ctx.send("Ingrese la nueva imagen de la partida (URL):")
+            nueva_imagen_message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+            nueva_imagen = nueva_imagen_message.content
+        
+        # Actualizar la información de la partida en la base de datos
+        campos_actualizados = {}
+        if nuevo_valor is not None:
+            campos_actualizados["nombre"] = nuevo_valor
+        if nueva_descripcion is not None:
+            campos_actualizados["descripcion"] = nueva_descripcion
+        if nuevo_sistema is not None:
+            campos_actualizados["sistema"] = nuevo_sistema
+        if nueva_fecha_hora is not None:
+            campos_actualizados["fecha_hora"] = nueva_fecha_hora
+        if nueva_cantidad_jugadores is not None:
+            campos_actualizados["cantidadjugadores"] = nueva_cantidad_jugadores
+        if nueva_imagen is not None:
+            campos_actualizados["imagen"] = nueva_imagen
+
+        # Vuelve a incluir los datos de Titulares y Suplentes en la actualización
+        campos_actualizados["titulares"] = titulares
+        campos_actualizados["suplentes"] = suplentes
+
+        db.partidas.update_one({"messageid": message_id}, {
+            "$set": campos_actualizados
+        })
+
+        # Editar el mensaje de la partida en el canal de aprobaciones
+        aprobaciones_channel = ctx.bot.get_channel(1152635624810094713)
+        mensaje_partida = await aprobaciones_channel.fetch_message(message_id)
+
+        # Construir el nuevo contenido del mensaje
+        nuevo_contenido = f"{campos_actualizados.get('nombre', partida['nombre'])}\n--------------------------\n{campos_actualizados.get('descripcion', partida['descripcion'])}\n--------------------------\n🎲Sistema: {campos_actualizados.get('sistema', partida['sistema'])}\n🧙Directorx de Juego: {partida['master']}\n🗓️Fecha y hora: <t:{campos_actualizados.get('fecha_hora', partida['fecha_hora'])}:F>\n🙋Cantidad de Jugadorxs: {campos_actualizados.get('cantidadjugadores', partida['cantidadjugadores'])}\n--------------------------\nLugares disponibles: {campos_actualizados.get('cantidadjugadores', partida['cantidadjugadores'])}\n--------------------------\n¿Cómo me anoto?\nReacciona a esta publicación con 💪 para anotarte como titular y con 🔁 para anotarte como suplente."
+        
+        # Agregar la imagen al contenido si está disponible
+        if campos_actualizados.get('imagen'):
+            nuevo_contenido += f"\n--------------------------\n{campos_actualizados['imagen']}"
+
+        # Agregar los datos de Titulares y Suplentes nuevamente al mensaje
+        nuevo_contenido += f"\nTitulares 💪: {' | '.join(titulares)}" if titulares else ""
+        nuevo_contenido += f"\nSuplentes 🔁: {' | '.join(suplentes)}" if suplentes else ""
+
+        # Editar el mensaje con el nuevo contenido
+        await mensaje_partida.edit(content=nuevo_contenido)
+
+        await ctx.send("Campos de la partida editados correctamente.")
+
+    except Exception as e:
+        await ctx.send(f"Se produjo un error: {str(e)}")
+
+#1152635624810094713        
 
 async def register_talk(ctx: commands.Context):
+    user_id = ctx.author.id                      
     try:
         #Preguntar por el nombre de la charla
         while True:
@@ -196,8 +422,12 @@ async def register_talk(ctx: commands.Context):
             if imagen.content != ".registrarcharla":
                 break
     except asyncio.TimeoutError:
-        await ctx.send("Tiempo agotado, cancelando registro.") 
-        return           
+        await ctx.send("Tiempo agotado, cancelando registro.")
+    except Exception as e:
+        await ctx.send(f"Se produjo un error: {e}") 
+    finally:
+        # Esto se ejecutará después de que el registro termine, incluso si fue por una excepción o cancelación.
+        user_registration_status[user_id] = False
     #Crear Mensaje de la charla
     charlam = {
     "nombre": nombre.content,
@@ -236,7 +466,7 @@ async def register_talk(ctx: commands.Context):
     #Insertar en la base de datos
     db.charlas.insert_one(charla)
     await ctx.send("¡Charla registrada correctamente! ✅, un moderador debe revisarla antes de publicarse en el canal de charlas-publicadas")
-    is_registering = False
+
 
 async def edit_message_players(message, player, role):
     content = message.content
@@ -280,10 +510,17 @@ async def remove_player(message, player, role):
             players = role_line.split(": ")[1]
         except IndexError:
             players = ""
- # Obtiene los jugadores actuales
+        # Obtiene los jugadores actuales
         if player.mention in players:
-            players = players.replace(f", {player.mention}", "").replace(f"{player.mention}", "")
+            players_list = [p.strip() for p in players.split(",")]  # Divide los jugadores actuales
+            players_list.remove(player.mention)  # Elimina al jugador
+            players = ", ".join(players_list)  # Reconstruye la lista de jugadores
             lines[lines.index(role_line)] = f"{role}: {players}" # Reemplaza la línea en la lista de líneas
+            # Actualiza las listas de jugadores en la base de datos
+            if role == "Titulares 💪":
+                db.partidas.update_one({"messageid": message.id}, {"$pull": {"titulares": player.mention}})
+            elif role == "Suplentes 🔁":
+                db.partidas.update_one({"messageid": message.id}, {"$pull": {"suplentes": player.mention}})
     content = "\n".join(lines) # Junta todas las líneas en un solo string
     await message.edit(content=content)    
 
@@ -369,7 +606,7 @@ async def on_raw_reaction_add(payload):
                     await edit_message_players(message, user, "Suplentes 🔁")
                     db.partidas.update_one({"messageid": message.id}, {"$push": {"suplentes": user.mention}})    
     elif message.channel.id == 1112025313682145371:
-        charlas_publicadas_channel = bot.get_channel(1152635692975927359)
+        charlas_publicadas_channel = bot.get_channel(1067174322222936064)
         user = bot.get_user(payload.user_id)
         if user.id == bot.user.id:
             return
@@ -417,29 +654,81 @@ async def Ayudin(interaction: discord.Interaction):
 
 @bot.command(name="registrarpartida", description="Registrá una partida en el Carnaval Rolero!")
 async def register_game_cmd(ctx):
-    global is_registering
-    if is_registering:
-        await ctx.send("Ya se está ejecutando una solicitud de registro, por favor espera a que finalice.")
-    else:
-        if ctx.guild is None:
-            is_registering = True
-            await register_game(ctx)
-            is_registering = False
-        else:
-            await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
+    user_id = ctx.author.id  # Obtén el ID del autor del mensaje.
 
-@bot.command(name="registrarcharla", description="Registrá una charla/taller en el Carnaval Rolero!")
-async def register_talk_cmd(ctx):
-    global is_registering
-    if is_registering:
-        await ctx.send("Ya se está ejecutando una solicitud de registro, por favor espera a que finalice.")
+    if user_registration_status[user_id]:
+        # El usuario ya está en un proceso de registro; no iniciar uno nuevo.
+        await ctx.send("Ya estás en un proceso de registro. Por favor, espera a que finalice.")
+        return
+
+    # Si llegamos aquí, el usuario no está en un proceso de registro.
+    if ctx.guild is None:  # Si el comando se usa en un mensaje directo.
+        # Intente iniciar el proceso de registro.
+        try:
+            # Marca al usuario como en proceso de registro.
+            user_registration_status[user_id] = True
+
+            # Inicia el proceso de registro.
+            await register_game(ctx)
+        except Exception as e:
+            # Si hay un error, informa al usuario.
+            await ctx.send(f"Se produjo un error: {e}")
+        finally:
+            # Después de intentar registrar (independientemente de si fue exitoso), resetea el estado de registro del usuario.
+            user_registration_status[user_id] = False
     else:
-        if ctx.guild is None:
-            is_registering = True
+        await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
+
+@bot.command(name="editcharla", description="Editar una charla existente.")
+async def edit_charla_cmd(ctx: commands.Context):
+    await ctx.send("Por favor, proporciona el ID del mensaje de la charla que deseas editar.")
+    try:
+        message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        if message.content == ".cancelarregistro":
+            await ctx.send("Edición de charla cancelada.")
+            return
+        message_id = int(message.content)
+        await editar_charla(ctx, message_id)
+    except asyncio.TimeoutError:
+        await ctx.send("Tiempo agotado, cancelando la edición de charla.")
+    except ValueError:
+        await ctx.send("El ID del mensaje debe ser un número válido.")
+
+@bot.command(name="editpartida", description="Editar una partida existente.")
+async def edit_partida_cmd(ctx: commands.Context):
+    await ctx.send("Por favor, proporciona el ID del mensaje de la partida que deseas editar.")
+    try:
+        message = await ctx.bot.wait_for('message', check=lambda m: m.author == ctx.message.author, timeout=300)
+        if message.content == ".cancelarregistro":
+            await ctx.send("Edición de partida cancelada.")
+            return
+        message_id = int(message.content)  # Convierte el contenido del mensaje en un entero
+        await editar_partida(ctx, message_id)  # Llama a la función para editar la partida
+    except ValueError:
+        await ctx.send("ID de mensaje no válido. La edición de partida se cancelará.")
+
+async def register_talk_cmd(ctx):
+    user_id = ctx.author.id  # Obtén el ID del autor del mensaje.
+    # Comprobar si el usuario ya está en un proceso de registro.
+    if user_registration_status[user_id]:
+        # El usuario ya está en un proceso de registro; no iniciar uno nuevo.
+        await ctx.send("Ya estás en un proceso de registro. Por favor, espera a que finalice.")
+        return
+    # Si llegamos aquí, el usuario no está en un proceso de registro.
+    if ctx.guild is None:  # Si el comando se usa en un mensaje directo.
+        user_registration_status[user_id] = True  # Marca al usuario como en proceso de registro.
+        try:
+            # Aquí iría tu lógica actual para registrar una charla.
             await register_talk(ctx)
-            is_registering = False
-        else:
-            await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
+        except Exception as e:
+            # Si hay un error, informa al usuario.
+            await ctx.send(f"Se produjo un error: {e}")
+        finally:
+            # Después de intentar registrar (independientemente de si fue exitoso), resetea el estado de registro del usuario.
+            user_registration_status[user_id] = False
+    else:
+        # Si el comando no se usó en un DM, informa al usuario que debe hacerlo.
+        await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
 
 @bot.command(name="cancelarregistro", description="Cancela el registro de una partida en el Carnaval Rolero.")
 async def cancel_register_game(ctx):
