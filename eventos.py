@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import time
+from collections import defaultdict                                                                                            
 
 import discord
 import pymongo
@@ -20,6 +21,7 @@ last_reaction_time = {}
 current_timestamp = time.time()
 time_struct = time.gmtime(current_timestamp)
 year = time_struct.tm_year
+user_registration_status = defaultdict(bool)                                                                                      
 
 async def talk_time(payload):
     user = bot.get_user(payload.user_id)
@@ -129,6 +131,7 @@ async def editar_charla(ctx: commands.Context, message_id: int):
         await ctx.send(f"Se produjo un error: {str(e)}")
 
 async def register_game(ctx: commands.Context):
+    user_id = ctx.author.id                                                  
     try:
         #Preguntar por el nombre de la partida
         while True:
@@ -200,7 +203,11 @@ async def register_game(ctx: commands.Context):
                 break
     except asyncio.TimeoutError:
         await ctx.send("Tiempo agotado, cancelando registro.") 
-        return           
+    except Exception as e:
+        await ctx.send(f"Se produjo un error: {e}") 
+    finally:
+        # Esto se ejecutará después de que el registro termine, incluso si fue por una excepción o cancelación.
+        user_registration_status[user_id] = False        
     #Crear Mensaje de la partida
     partidam = {
     "nombre": nombre.content,
@@ -247,7 +254,7 @@ async def register_game(ctx: commands.Context):
     #Insertar en la base de datos
     db.partidas.insert_one(partida)
     await ctx.send("¡Partida registrada correctamente! ✅, un moderador debe revisarla antes de publicarse en el canal de partidas-publicadas")
-    is_registering = False
+
 
 async def editar_partida(ctx: commands.Context, message_id: int):
     try:
@@ -382,6 +389,7 @@ async def editar_partida(ctx: commands.Context, message_id: int):
 
 
 async def register_talk(ctx: commands.Context):
+    user_id = ctx.author.id                                                 
     try:
         #Preguntar por el nombre de la charla
         while True:
@@ -415,7 +423,11 @@ async def register_talk(ctx: commands.Context):
                 break
     except asyncio.TimeoutError:
         await ctx.send("Tiempo agotado, cancelando registro.") 
-        return           
+    except Exception as e:
+        await ctx.send(f"Se produjo un error: {e}") 
+    finally:
+        # Esto se ejecutará después de que el registro termine, incluso si fue por una excepción o cancelación.
+        user_registration_status[user_id] = False
     #Crear Mensaje de la charla
     charlam = {
     "nombre": nombre.content,
@@ -454,7 +466,7 @@ async def register_talk(ctx: commands.Context):
     #Insertar en la base de datos
     db.charlas.insert_one(charla)
     await ctx.send("¡Charla registrada correctamente! ✅, un moderador debe revisarla antes de publicarse en el canal de charlas-publicadas")
-    is_registering = False
+
 
 async def edit_message_players(message, player, role):
     content = message.content
@@ -644,16 +656,30 @@ async def Ayudin(interaction: discord.Interaction):
 
 @bot.command(name="registrarpartida", description="Registrá una partida en el Carnaval Rolero!")
 async def register_game_cmd(ctx):
-    global is_registering
-    if is_registering:
-        await ctx.send("Ya se está ejecutando una solicitud de registro, por favor espera a que finalice.")
-    else:
-        if ctx.guild is None:
-            is_registering = True
+    user_id = ctx.author.id  # Obtén el ID del autor del mensaje.
+
+    if user_registration_status[user_id]:
+        # El usuario ya está en un proceso de registro; no iniciar uno nuevo.
+        await ctx.send("Ya estás en un proceso de registro. Por favor, espera a que finalice.")
+        return
+
+    # Si llegamos aquí, el usuario no está en un proceso de registro.
+    if ctx.guild is None:  # Si el comando se usa en un mensaje directo.
+        # Intente iniciar el proceso de registro.
+        try:
+            # Marca al usuario como en proceso de registro.
+            user_registration_status[user_id] = True
+
+            # Inicia el proceso de registro.
             await register_game(ctx)
-            is_registering = False
-        else:
-            await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
+        except Exception as e:
+            # Si hay un error, informa al usuario.
+            await ctx.send(f"Se produjo un error: {e}")
+        finally:
+            # Después de intentar registrar (independientemente de si fue exitoso), resetea el estado de registro del usuario.
+            user_registration_status[user_id] = False
+    else:
+        await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
 
 @bot.command(name="editcharla", description="Editar una charla existente.")
 async def edit_charla_cmd(ctx: commands.Context):
@@ -683,18 +709,29 @@ async def edit_partida_cmd(ctx: commands.Context):
     except ValueError:
         await ctx.send("ID de mensaje no válido. La edición de partida se cancelará.")
 
-@bot.command(name="registrarcharla", description="Registrá una charla/taller en el Carnaval Rolero!")
+
 async def register_talk_cmd(ctx):
-    global is_registering
-    if is_registering:
-        await ctx.send("Ya se está ejecutando una solicitud de registro, por favor espera a que finalice.")
-    else:
-        if ctx.guild is None:
-            is_registering = True
+    user_id = ctx.author.id  # Obtén el ID del autor del mensaje.
+    # Comprobar si el usuario ya está en un proceso de registro.
+    if user_registration_status[user_id]:
+        # El usuario ya está en un proceso de registro; no iniciar uno nuevo.
+        await ctx.send("Ya estás en un proceso de registro. Por favor, espera a que finalice.")
+        return
+    # Si llegamos aquí, el usuario no está en un proceso de registro.
+    if ctx.guild is None:  # Si el comando se usa en un mensaje directo.
+        user_registration_status[user_id] = True  # Marca al usuario como en proceso de registro.
+        try:
+            # Aquí iría tu lógica actual para registrar una charla.
             await register_talk(ctx)
-            is_registering = False
-        else:
-            await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
+        except Exception as e:
+            # Si hay un error, informa al usuario.
+            await ctx.send(f"Se produjo un error: {e}")
+        finally:
+            # Después de intentar registrar (independientemente de si fue exitoso), resetea el estado de registro del usuario.
+            user_registration_status[user_id] = False
+    else:
+        # Si el comando no se usó en un DM, informa al usuario que debe hacerlo.
+        await ctx.send("Este comando solo puede ser utilizado en una conversación privada con el bot.", ephemeral=True)
 
 @bot.command(name="cancelarregistro", description="Cancela el registro de una partida en el Carnaval Rolero.")
 async def cancel_register_game(ctx):
