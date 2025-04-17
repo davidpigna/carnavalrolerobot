@@ -11,7 +11,7 @@ from pymongo import MongoClient
 
 from responses import handle_response
 
-TOKEN = 'MTA2NDY1OTkwMzcxMDUxMTEyNA.GBz56M.6z_Voy4Zlu5RKtMhSqTZdg7NVuFMiG-2pyiNRo'
+TOKEN = 'your token'
 client = pymongo.MongoClient("mongodb+srv://carnavalbot:L1TFC8W9wFFdKJHP@cluster0.kcjjzxf.mongodb.net/?retryWrites=true&w=majority")
 db = client.carnavaldb
 intents = discord.Intents.all()
